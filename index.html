@@ -100,16 +100,22 @@ async function listPdfs() {
   const res = await fetch(`https://api.github.com/repos/${r.owner}/${r.repo}/contents/`);
   if (!res.ok) throw new Error(`GitHub said ${res.status}`);
   const items = await res.json();
-  return items.filter(i => i.type === "file" && /\.pdf$/i.test(i.name))
-              .map(i => i.name)
-              .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const pdfs = items.filter(i => i.type === "file" && /\.pdf$/i.test(i.name));
+  // GitHub's fingerprint of each file changes whenever the file does.
+  for (const i of pdfs) versions[i.name] = i.sha;
+  return pdfs.map(i => i.name)
+             .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 }
+
+// file name -> fingerprint. Added to the PDF's address so a re-uploaded
+// PDF counts as a new file and is never served from an old cached copy.
+const versions = {};
 
 let renderToken = 0;
 
 async function show(file, files) {
   const token = ++renderToken;
-  const url = encodeURI(file);
+  const url = encodeURI(file) + (versions[file] ? `?v=${versions[file].slice(0, 12)}` : "");
   document.title = titleEl.textContent = prettyName(file);
   download.href = url;
   download.hidden = false;
