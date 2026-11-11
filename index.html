@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Portfolio</title>
+<!--
+  Drop any .pdf into the top level of this repository and it shows up here.
+  No settings to change: the page asks GitHub which PDFs the repo holds.
+  Several PDFs get a row of tabs; a link can open one directly with ?pdf=name.pdf
+-->
+<style>
+  :root {
+    --bg: #f4f4f2; --fg: #1d1d1f; --muted: #6b6b70; --card: #ffffff;
+    --line: #dcdcd8; --accent: #2b59c3;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161617; --fg: #ececec; --muted: #9a9aa0; --card: #232325;
+      --line: #36363a; --accent: #7fa3ff;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    max-width: 1000px; margin: 0 auto; padding: 28px 16px 8px;
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline;
+    justify-content: space-between;
+  }
+  h1 { font-size: 1.4rem; margin: 0; font-weight: 600; }
+  nav { display: flex; flex-wrap: wrap; gap: 6px; max-width: 1000px;
+        margin: 0 auto; padding: 8px 16px 0; }
+  nav button {
+    font: inherit; font-size: .9rem; padding: 6px 12px; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 999px;
+    background: var(--card); color: var(--fg);
+  }
+  nav button[aria-current="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  .actions a { color: var(--accent); font-size: .9rem; text-decoration: none; }
+  .actions a:hover { text-decoration: underline; }
+  main { max-width: 1000px; margin: 0 auto; padding: 16px; }
+  .page {
+    background: #fff; margin: 0 auto 18px; width: 100%;
+    box-shadow: 0 1px 3px rgba(0,0,0,.12), 0 6px 24px rgba(0,0,0,.06);
+    border-radius: 2px; overflow: hidden;
+  }
+  .page canvas { display: block; width: 100%; height: auto; }
+  .status { color: var(--muted); text-align: center; padding: 60px 0; }
+  .status code { background: var(--card); padding: 2px 6px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Portfolio</h1>
+  <div class="actions"><a id="download" href="#" hidden>Download PDF</a></div>
+</header>
+<nav id="tabs" hidden></nav>
+<main id="viewer"><p class="status" id="status">Loading…</p></main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+const viewer = document.getElementById("viewer");
+const tabs = document.getElementById("tabs");
+const titleEl = document.getElementById("title");
+const download = document.getElementById("download");
+
+function setStatus(html) {
+  viewer.innerHTML = `<p class="status">${html}</p>`;
+}
+
+// "my_cv-2025.pdf" -> "My cv 2025"
+function prettyName(file) {
+  const s = decodeURIComponent(file).replace(/\.pdf$/i, "").replace(/[_-]+/g, " ").trim();
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+// Work out owner/repo from the GitHub Pages address:
+//   owner.github.io/repo/  -> owner, repo
+//   owner.github.io/       -> owner, owner.github.io
+function repoFromLocation() {
+  const host = location.hostname;
+  if (!host.endsWith(".github.io")) return null;
+  const owner = host.slice(0, -".github.io".length);
+  const first = location.pathname.split("/").filter(Boolean)[0];
+  const repo = first && !first.includes(".") ? first : host;
+  return { owner, repo };
+}
+
+async function listPdfs() {
+  const r = repoFromLocation();
+  if (!r) return [];
+  const res = await fetch(`https://api.github.com/repos/${r.owner}/${r.repo}/contents/`);
+  if (!res.ok) throw new Error(`GitHub said ${res.status}`);
+  const items = await res.json();
+  return items.filter(i => i.type === "file" && /\.pdf$/i.test(i.name))
+              .map(i => i.name)
+              .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+}
+
+let renderToken = 0;
+
+async function show(file, files) {
+  const token = ++renderToken;
+  const url = encodeURI(file);
+  document.title = titleEl.textContent = prettyName(file);
+  download.href = url;
+  download.hidden = false;
+  for (const b of tabs.children) b.setAttribute("aria-current", b.dataset.file === file);
+  if (files.length > 1) {
+    const q = new URLSearchParams(location.search);
+    q.set("pdf", file);
+    history.replaceState(null, "", `?${q}`);
+  }
+  setStatus("Loading…");
+
+  let pdf;
+  try {
+    pdf = await pdfjsLib.getDocument(url).promise;
+  } catch (e) {
+    setStatus(`Couldn't open <code>${file}</code>.`);
+    download.hidden = true;
+    return;
+  }
+  if (token !== renderToken) return;
+  viewer.innerHTML = "";
+
+  // Draw each page when it scrolls near the screen, at the sharpness the
+  // screen needs, so long PDFs open fast.
+  const observer = new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting || entry.target.dataset.drawn) continue;
+      entry.target.dataset.drawn = "1";
+      draw(pdf, Number(entry.target.dataset.n), entry.target);
+    }
+  }, { rootMargin: "800px 0px" });
+
+  for (let n = 1; n <= pdf.numPages; n++) {
+    const page = await pdf.getPage(n);
+    if (token !== renderToken) return;
+    const vp = page.getViewport({ scale: 1 });
+    const box = document.createElement("div");
+    box.className = "page";
+    box.dataset.n = n;
+    box.style.aspectRatio = `${vp.width} / ${vp.height}`;
+    box.style.maxWidth = `${Math.max(vp.width * 1.6, 600)}px`;
+    viewer.appendChild(box);
+    observer.observe(box);
+  }
+}
+
+async function draw(pdf, n, box) {
+  const page = await pdf.getPage(n);
+  const base = page.getViewport({ scale: 1 });
+  const scale = (box.clientWidth / base.width) * Math.min(window.devicePixelRatio || 1, 3);
+  const vp = page.getViewport({ scale });
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.floor(vp.width);
+  canvas.height = Math.floor(vp.height);
+  box.appendChild(canvas);
+  await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+}
+
+(async () => {
+  const wanted = new URLSearchParams(location.search).get("pdf");
+  let files = [];
+  try {
+    files = await listPdfs();
+  } catch (e) {
+    // GitHub's listing is unavailable (rate limit, private repo, local file):
+    // a ?pdf= link still works.
+  }
+  if (wanted && !files.includes(wanted)) files.unshift(wanted);
+
+  if (!files.length) {
+    setStatus("No PDF here yet. Upload a <code>.pdf</code> to the top level of this repository.");
+    return;
+  }
+  if (files.length > 1) {
+    tabs.hidden = false;
+    for (const f of files) {
+      const b = document.createElement("button");
+      b.textContent = prettyName(f);
+      b.dataset.file = f;
+      b.onclick = () => show(f, files);
+      tabs.appendChild(b);
+    }
+  }
+  show(wanted && files.includes(wanted) ? wanted : files[0], files);
+})();
+</script>
+</body>
+</html>
